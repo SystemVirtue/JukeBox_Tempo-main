@@ -1,435 +1,359 @@
-// =============================================================================
-// ==                               player.js                                 ==
-// ==          Handles the YouTube IFrame Player and Communication            ==
-// =============================================================================
-
-// Enable debug logging
-const DEBUG = true;
-
 // --- Global Variables & Constants ---
-const COMMAND_STORAGE_KEY = 'jukeboxCommand';
-const STATUS_STORAGE_KEY = 'jukeboxStatus';
-const PLAYER_READY_TIMEOUT_MS = 30000; // Increased timeout to 30 seconds
-const PLAYER_RETRY_DELAY_MS = 2000; // 2 seconds between retries
-const MAX_RETRY_ATTEMPTS = 3;
+const COMMAND_STORAGE_KEY = 'jukeboxCommand'; // Key for receiving commands
+const STATUS_STORAGE_KEY = 'jukeboxStatus';   // Key for sending status back
+const PLAYER_READY_TIMEOUT_MS = 15000; // Timeout for player init
+const FADE_INTERVAL_MS = 50;   // Interval for audio fade steps
+const DEBUG_MODE = true; // Enable debug mode for development
 
-let player;
+let player; // Holds the YT.Player object
 let isPlayerReady = false;
-let isInitialized = false;
-let currentPlayerVideoId = null;
-let fadeOverlay = null;
-let loadingMessage = null;
-let errorMessage = null;
-let playerReadyTimeout = null;
-let initializationAttempts = 0;
+// --- ADDED: Declare globally ---
+let apiReadyCheckTimeoutId = null;
+// --- End Add ---
+let currentPlayerVideoId = null; // Track ID of video loaded in player
+let fadeIntervalId = null; // ID for audio fade timer
+let isFadingOut = false; // Local flag for fading state
 
-// --- Debug Helper ---
-function debugLog(...args) {
-    if (DEBUG) {
-        console.log('[Jukebox Player]', ...args);
-    }
-}
+// DOM Reference for Fade Overlay (cached on DOM Ready)
+let fadeOverlay = null;
+
 
 // --- YouTube IFrame API Setup ---
-// Store the original onYouTubeIframeAPIReady if it exists
-const originalOnYouTubeIframeAPIReady = window.onYouTubeIframeAPIReady;
-
-// Define our implementation
 window.onYouTubeIframeAPIReady = function() {
-    debugLog("YouTube API Ready");
-    
-    // Call the original handler if it exists
-    if (typeof originalOnYouTubeIframeAPIReady === 'function') {
-        try {
-            originalOnYouTubeIframeAPIReady();
-        } catch (e) {
-            console.error("Error in original onYouTubeIframeAPIReady:", e);
+    console.log("DEBUG: [PlayerWin] >>> window.onYouTubeIframeAPIReady function called <<<");
+    // Now this clearTimeout is valid as apiReadyCheckTimeoutId is in scope
+    if (apiReadyCheckTimeoutId) { clearTimeout(apiReadyCheckTimeoutId); console.log("DEBUG: [PlayerWin] Cleared existing API timeout."); }
+
+    // Add a small delay before initializing the player (helps with localhost issues)
+    setTimeout(() => {
+        if (typeof YT === 'undefined' || typeof YT.Player === 'undefined') {
+            console.error("DEBUG: [PlayerWin] FATAL - YT or YT.Player is UNDEFINED!");
+            displayPlayerError("YouTube API failed to load. This may be due to network restrictions or running on localhost."); 
+            isPlayerReady = false; 
+            return;
         }
-    }
-    
-    // Reset initialization attempts counter
-    initializationAttempts = 0;
-    
-    const targetElement = document.getElementById('youtube-fullscreen-player');
-    if (!targetElement) {
-        const errorMsg = "YouTube player target element not found";
-        showError(errorMsg);
-        console.error("[Jukebox Player]", errorMsg);
-        return;
-    }
+        console.log("DEBUG: [PlayerWin] YT object available.");
+    }, 1000);
 
     try {
-        debugLog("Creating YouTube player instance...");
-        player = new YT.Player('youtube-fullscreen-player', {
-            height: '100%',
-            width: '100%',
-            playerVars: {
-                'playsinline': 1,
-                'controls': 0,
-                'rel': 0,
-                'autoplay': 1,
-                'mute': 1,
-                'origin': window.location.origin,
-                'origin': window.location.origin,
-                'enablejsapi': 1,
-                'fs': 0,
-                'modestbranding': 1,
-                'iv_load_policy': 3
-            },
-            events: {
-                'onReady': onPlayerReady,
-                'onStateChange': onPlayerStateChange,
-                'onError': onPlayerError,
-                'onApiChange': onApiChange
+        const targetElement = document.getElementById('youtube-fullscreen-player');
+        if (!targetElement) {
+            console.error("DEBUG: [PlayerWin] FATAL - Target element '#youtube-fullscreen-player' missing!");
+            displayPlayerError("Player Div Missing"); isPlayerReady = false; return;
+        }
+        console.log("DEBUG: [PlayerWin] Target element found.");
+
+        // Wait for Dimensions Function
+        function createPlayerWhenReady() {
+            const rect = targetElement.getBoundingClientRect();
+            const computedStyle = window.getComputedStyle(targetElement);
+            console.log(`DEBUG: [PlayerWin] Checking dimensions - Width: ${rect.width}, Height: ${rect.height}, Display: ${computedStyle.display}`);
+
+            if (rect.width > 0 && rect.height > 0 && computedStyle.display !== 'none') {
+                console.log("DEBUG: [PlayerWin] Target element has dimensions. Proceeding with player creation.");
+                try {
+                     player = new YT.Player('youtube-fullscreen-player', {
+                        height: '100%', width: '100%',
+                        playerVars: { 
+                            'playsinline': 1, 
+                            'controls': 0, 
+                            'rel': 0,
+                            'origin': window.location.origin, // Add origin for localhost
+                            'enablejsapi': 1 // Explicitly enable JS API
+                        },
+                        events: { 'onReady': onPlayerWindowReady, 'onStateChange': onPlayerWindowStateChange, 'onError': onPlayerWindowError }
+                    });
+                     if (player && typeof player.addEventListener === 'function') {
+                        console.log("DEBUG: [PlayerWin] YT.Player object CREATED successfully (waiting for onReady).");
+                     } else {
+                        console.error("DEBUG: [PlayerWin] YT.Player object creation FAILED silently.");
+                        isPlayerReady = false; displayPlayerError("Player Object Create Fail");
+                     }
+                } catch(e) {
+                     console.error("DEBUG: [PlayerWin] CRITICAL - Exception during new YT.Player() constructor.", e);
+                     isPlayerReady = false; displayPlayerError("Player Create Exception");
+                }
+            } else {
+                console.log("DEBUG: [PlayerWin] Target element still has zero dimensions or is hidden. Waiting...");
+                setTimeout(createPlayerWhenReady, 100); // Check again
             }
-        });
-    } catch (error) {
-        const errorMsg = `Failed to initialize YouTube player: ${error.message}`;
-        showError(errorMsg);
-        console.error("[Jukebox Player]", errorMsg, error);
+        }
+        // Start the checking process
+        createPlayerWhenReady();
+
+    } catch (e) { // Catch errors from initial element finding etc.
+        console.error("DEBUG: [PlayerWin] Error in onYouTubeIframeAPIReady before player creation attempt:", e);
+        isPlayerReady = false; displayPlayerError("Initialization Error");
     }
 };
 
-// --- UI Helpers ---
-function showError(message) {
-    if (!errorMessage) errorMessage = document.getElementById('error-message');
-    if (errorMessage) {
-        errorMessage.textContent = message;
-        errorMessage.style.display = 'block';
-        if (loadingMessage) loadingMessage.style.display = 'none';
-    }
+function onPlayerWindowReady(event) {
+    console.log("%c DEBUG: [PlayerWin] !!!!!!!!!! onPlayerWindowReady EVENT FIRED !!!!!!!!!!", "color: green; font-weight: bold;");
+    isPlayerReady = true; // SET THE FLAG
+    console.log("DEBUG: [PlayerWin][Ready] isPlayerReadyFlag set to TRUE");
+
+    if(player && typeof player.getPlayerState === 'function') { console.log("DEBUG: [PlayerWin][Ready] Initial Player State:", player.getPlayerState()); }
+    // Cache overlay element if not already done in DOMContentLoaded
+    if (!fadeOverlay) fadeOverlay = document.getElementById('fade-overlay');
+    if (!fadeOverlay) { console.error("DEBUG: [PlayerWin][Ready] Fade overlay element not found!"); }
+
+    processStoredCommand(); // Check for pending commands
 }
 
-function hideError() {
-    if (errorMessage) {
-        errorMessage.style.display = 'none';
-    }
-    if (loadingMessage) {
-        loadingMessage.style.display = 'block';
-    }
-}
-
-function showPlayer() {
-    const playerEl = document.getElementById('youtube-fullscreen-player');
-    if (playerEl) {
-        playerEl.style.opacity = '1';
-    }
-    if (fadeOverlay) {
-        fadeOverlay.style.opacity = '0';
-        setTimeout(() => {
-            if (fadeOverlay) fadeOverlay.style.display = 'none';
-        }, 300);
-    }
-}
-
-// Player event handlers
-function onPlayerReady(event) {
-    debugLog("Player Ready");
-    isPlayerReady = true;
-    isInitialized = true;
-    
-    // Clear any timeout that might be waiting for player ready
-    if (playerReadyTimeout) {
-        clearTimeout(playerReadyTimeout);
-        playerReadyTimeout = null;
-    }
-    
-    // Initialize UI elements
-    fadeOverlay = document.getElementById('fade-overlay');
-    loadingMessage = document.getElementById('loading-message');
-    errorMessage = document.getElementById('error-message');
-    
-    // Hide loading and show player
-    if (loadingMessage) loadingMessage.textContent = 'Loading video...';
-    hideError();
-    
-    // Notify parent window
-    sendStatus('ready');
-    
-    // If we have a video ID, load it
-    if (currentPlayerVideoId) {
-        loadVideo(currentPlayerVideoId);
-    }
-    // Start playback
-    if (player && typeof player.playVideo === 'function') {
-        player.playVideo();
-    }
-}
-
-function onPlayerStateChange(event) {
-    console.log("[Player] State changed:", event.data);
-    
-    if (event.data === YT.PlayerState.ENDED) {
-        console.log("[Player] Video ended");
-        sendStatus('ended', { id: currentPlayerVideoId });
+function onPlayerWindowStateChange(event) {
+    console.log("DEBUG: [PlayerWin] State Change:", event.data);
+    if (event.data === YT.PlayerState.ENDED && !isFadingOut) { // Don't send 'ended' if manually fading out
+        console.log("DEBUG: [PlayerWin] Video Ended. Sending 'ended' status back.");
+        sendPlayerStatus('ended', { id: currentPlayerVideoId });
         currentPlayerVideoId = null;
     } else if (event.data === YT.PlayerState.PLAYING) {
-        console.log("[Player] Video playing");
-        try {
-            const videoData = event.target.getVideoData();
-            if (videoData && videoData.video_id) {
-                currentPlayerVideoId = videoData.video_id;
-                sendStatus('playing', { id: currentPlayerVideoId });
-            }
-        } catch (e) {
-            console.error("[Player] Error getting video data:", e);
-        }
-    } else if (event.data === YT.PlayerState.PAUSED) {
-        console.log("[Player] Video paused");
-        sendStatus('paused');
-    } else if (event.data === YT.PlayerState.BUFFERING) {
-        console.log("[Player] Buffering");
+         console.log("DEBUG: [PlayerWin] Video is Playing.");
+         try { currentPlayerVideoId = event.target?.getVideoData?.()?.video_id || currentPlayerVideoId; } catch(e){}
+         // Ensure overlay is hidden when video starts playing normally
+         resetFadeOverlayVisuals();
     }
 }
 
-function onPlayerError(event) {
-    debugLog('Player error:', event.data);
-    sendStatus('error', { message: `Player error: ${event.data}` });
-}
-
-function onApiChange(event) {
-    debugLog('API change:', event);
-    // You can add specific handling for API changes here if needed
-}
-
-// Communication with main window
-function sendStatus(status, data = {}) {
-    const message = { status, ...data };
-    debugLog("Sending status:", status, data);
+function onPlayerWindowError(event) {
+    console.error("%c DEBUG: [PlayerWin] !!!!!!!!!! onPlayerError EVENT FIRED !!!!!!!!!! Code:", "color: red; font-weight: bold;", event.data);
+    const errorMessages = { 
+        2: 'Invalid parameter', 
+        5: 'HTML5 player error', 
+        100: 'Video not found', 
+        101: 'Playback disallowed (embed)', 
+        150: 'Playback disallowed (embed)' 
+    };
     
-    try {
-        // Try to send via postMessage first
-        if (window.opener && !window.opener.closed) {
-            try {
-                window.opener.postMessage(message, window.location.origin);
-            } catch (e) {
-                debugLog("Error sending message to opener:", e);
-            }
-        }
-        
-        // Also store in localStorage as fallback
-        try {
-            localStorage.setItem(STATUS_STORAGE_KEY, JSON.stringify({
-                ...message,
-                timestamp: Date.now()
-            }));
-        } catch (e) {
-            debugLog("Error saving to localStorage:", e);
-        }
-    } catch (error) {
-        console.error("[Jukebox Player] Error sending status:", error);
+    const message = errorMessages[event.data] || `Unknown error ${event.data}`;
+    console.error(`DEBUG: [PlayerWin] YouTube Player Error: ${message}`);
+    
+    // Special handling for localhost issues (errors 101 and 150 are common in localhost)
+    if (event.data === 101 || event.data === 150) {
+        displayPlayerError(`YouTube restricts video playback in embedded players on localhost. Try using a deployed version or a different video.`);
+    } else {
+        displayPlayerError(`Player Error: ${message} (${event.data})`);
     }
+    
+    sendPlayerStatus('error', { code: event.data, message: message, id: currentPlayerVideoId });
 }
 
-// Load a video with error handling
-function loadVideo(videoId, startSeconds = 0) {
-    if (!player || !isPlayerReady) {
-        debugLog("Player not ready, queueing video load:", videoId);
-        currentPlayerVideoId = videoId;
+// --- Combined Fade Function ---
+function startVisualAndAudioFade(durationMs) {
+    if (!isPlayerReady || !player || typeof player.getVolume !== 'function' || isFadingOut || !fadeOverlay) {
+        console.warn("DEBUG: [PlayerWin] Cannot start fade:", { isPlayerReady, player: !!player, hasGetVol: typeof player?.getVolume, isFading: isFadingOut, hasOverlay: !!fadeOverlay });
+        sendPlayerStatus('fadeComplete', { id: currentPlayerVideoId }); // Signal failure as completion
         return;
     }
-    
-    try {
-        debugLog("Loading video:", videoId);
-        if (startSeconds) {
-            player.loadVideoById({
-                videoId: videoId,
-                startSeconds: startSeconds
-            });
+
+    isFadingOut = true;
+    let currentVolume = player.getVolume();
+    const steps = durationMs / FADE_INTERVAL_MS;
+    const volumeStep = steps > 0 ? (currentVolume / steps) : currentVolume; // Avoid division by zero
+
+    console.log(`DEBUG: [PlayerWin] Fading: Duration=${durationMs}ms, Vol=${currentVolume}, Step=${volumeStep}, Steps=${steps}`);
+
+    // Start visual fade
+    fadeOverlay.style.transitionDuration = `${durationMs / 1000}s, 0s`;
+    fadeOverlay.style.transitionDelay = `0s, 0s`;
+    fadeOverlay.classList.add('fading-out');
+
+    if (fadeIntervalId) clearInterval(fadeIntervalId);
+
+    fadeIntervalId = setInterval(() => {
+        currentVolume -= volumeStep;
+        if (currentVolume <= 0) {
+            clearInterval(fadeIntervalId); fadeIntervalId = null;
+            console.log("DEBUG: [PlayerWin] Audio Fade Out Complete.");
+            if (player && typeof player.setVolume === 'function') {
+                player.setVolume(0);
+                if (typeof player.stopVideo === 'function') { player.stopVideo(); }
+                player.setVolume(100);
+            }
+            isFadingOut = false;
+            sendPlayerStatus('fadeComplete', { id: currentPlayerVideoId }); // Signal completion
+            currentPlayerVideoId = null;
         } else {
-            player.loadVideoById(videoId);
+            if (player && typeof player.setVolume === 'function') { player.setVolume(currentVolume); }
         }
-    } catch (error) {
-        const errorMsg = `Error loading video: ${error.message}`;
-        console.error("[Jukebox Player]", errorMsg, error);
-        showError("Error loading video");
-        sendStatus('error', { message: errorMsg });
+    }, FADE_INTERVAL_MS);
+}
+
+// --- Reset Visual Fade Overlay ---
+function resetFadeOverlayVisuals() {
+    if (fadeOverlay && fadeOverlay.classList.contains('fading-out')) {
+        console.log("DEBUG: [PlayerWin] Resetting fade overlay visuals.");
+        fadeOverlay.classList.remove('fading-out');
+        fadeOverlay.style.transitionDuration = ''; // Reset to CSS default
+        fadeOverlay.style.transitionDelay = '';    // Reset to CSS default
     }
 }
 
-// Handle commands from main window
-window.addEventListener('message', (event) => {
-    // Verify the origin of the message for security
-    if (event.origin !== window.location.origin) {
-        debugLog("Ignoring message from unauthorized origin:", event.origin);
+// --- localStorage Command Processing ---
+function processStoredCommand() {
+    try {
+        const commandString = localStorage.getItem(COMMAND_STORAGE_KEY);
+        if (commandString) {
+            console.log("DEBUG: [PlayerWin] Found command in storage on load/ready:", commandString);
+            const commandData = JSON.parse(commandString);
+            executePlayerCommand(commandData);
+        } else { console.log("DEBUG: [PlayerWin] No command found in storage on load/ready."); }
+    } catch (e) { console.error("DEBUG: [PlayerWin] Error processing stored command:", e); }
+}
+
+function handleStorageChange(event) {
+    // Only react to command updates from other windows for the correct key
+    if (event.key === COMMAND_STORAGE_KEY && event.newValue && event.storageArea === localStorage) {
+        console.log("DEBUG: [PlayerWin] Received command via storage event:", event.newValue);
+        try {
+            const commandData = JSON.parse(event.newValue);
+            executePlayerCommand(commandData);
+        } catch (e) { console.error("DEBUG: [PlayerWin] Error parsing command from storage event:", e); }
+    }
+}
+
+function executePlayerCommand(commandData) {
+    if (!commandData || !commandData.action) { return; }
+    // *** Crucially, wait for player readiness BEFORE executing commands ***
+    if (!isPlayerReady || !player) {
+        console.warn(`DEBUG: [PlayerWin] Player not ready when command '${commandData.action}' received. Ignoring.`);
         return;
     }
-    
-    debugLog("Received message:", event.data);
-    
-    if (event.data && event.data.command) {
-        try {
-            handleCommand(event.data.command, event.data.data);
-        } catch (error) {
-            const errorMsg = `Error handling command ${event.data.command}: ${error.message}`;
-            console.error("[Jukebox Player]", errorMsg, error);
-            sendStatus('error', { message: errorMsg });
+
+    console.log(`DEBUG: [PlayerWin] Executing action: ${commandData.action}`);
+    try {
+        // Reset visual fade before most actions (except fade itself)
+        if (commandData.action !== 'fadeOutAndBlack') {
+             resetFadeOverlayVisuals();
         }
+
+        switch (commandData.action) {
+            case 'play':
+                if (commandData.videoId && typeof player.loadVideoById === 'function') {
+                    console.log(`DEBUG: [PlayerWin] Loading Video: ${commandData.videoId} (${commandData.artist || 'N/A'} - ${commandData.title || 'N/A'})`);
+                    currentPlayerVideoId = commandData.videoId; // Store *before* loading
+                    player.loadVideoById(commandData.videoId);
+                    // Autoplay is handled by YouTube API state changes or playerVars, but sometimes playVideo() is needed after load/cue
+                    // player.playVideo(); // Uncomment if videos aren't autoplaying after load
+                    document.title = `${commandData.artist || '?'} - ${commandData.title || '?'}`;
+                } else { console.warn("DEBUG: [PlayerWin] Invalid 'play' command data:", commandData); }
+                break;
+            case 'stop':
+                if (typeof player.stopVideo === 'function') {
+                    console.log("DEBUG: [PlayerWin] Stopping video.");
+                    resetFadeOverlayVisuals();
+                    player.stopVideo();
+                    document.title = "Jukebox Player";
+                    currentPlayerVideoId = null;
+                }
+                break;
+            case 'fadeOutAndBlack':
+                 const fadeDuration = commandData.fadeDuration || 5000;
+                 console.log(`DEBUG: [PlayerWin] Initiating fadeOutAndBlack over ${fadeDuration}ms`);
+                 startVisualAndAudioFade(fadeDuration);
+                 break;
+            default: console.warn("DEBUG: [PlayerWin] Unknown command action:", commandData.action); break;
+        }
+    } catch(e) { console.error(`DEBUG: [PlayerWin] Error executing command action '${commandData.action}':`, e); }
+}
+
+// --- Helper to Send Status ---
+function sendPlayerStatus(statusType, data = {}) {
+     try {
+        const statusData = {
+            status: statusType,
+            id: currentPlayerVideoId, // Include current ID if available
+            timestamp: Date.now(),
+            ...data // Include any extra data
+        };
+        console.log(`%c DEBUG: [PlayerWin] >>> Sending status >>> Key: ${STATUS_STORAGE_KEY}, Data: ${JSON.stringify(statusData)}`, "color: orange;");
+        localStorage.setItem(STATUS_STORAGE_KEY, JSON.stringify(statusData));
+     } catch (e) {
+         console.error("DEBUG: [PlayerWin] Failed to send status update.", e);
+     }
+}
+
+// --- Utility ---
+function displayPlayerError(message) {
+     const container = document.getElementById('youtube-fullscreen-player');
+     // Also try setting body background for very early errors
+     document.body.style.backgroundColor = '#300'; // Dark red on error
+     
+     // Create a more helpful error message with troubleshooting tips
+     const errorHTML = `
+        <div style="position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); display:flex; justify-content:center; align-items:center; z-index: 10;">
+            <div style="color: #fff; font-size: 1em; text-align:center; padding: 20px; background: rgba(0,0,0,0.7); border-radius: 5px; max-width: 80%;">
+                <h2 style="color: #ff5555; margin-bottom: 15px;">Player Error</h2>
+                <p style="margin-bottom: 15px;">${message}</p>
+                <div style="font-size: 0.9em; text-align: left; margin-top: 20px; border-top: 1px solid #555; padding-top: 15px;">
+                    <p style="margin-bottom: 10px;"><strong>Troubleshooting:</strong></p>
+                    <ul style="list-style-type: disc; padding-left: 20px;">
+                        <li>YouTube restricts playback on localhost environments</li>
+                        <li>Try a different video (some videos have embedding restrictions)</li>
+                        <li>Check browser console for specific error details</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+     `;
+     
+     if (container) {
+         container.innerHTML = errorHTML;
+     } else {
+         document.body.innerHTML = errorHTML;
+     }
+     
+     // Log additional debug information
+     if (DEBUG_MODE) {
+         console.log('Player error details:', {
+             url: window.location.href,
+             origin: window.location.origin,
+             playerReady: isPlayerReady,
+             currentVideo: currentPlayerVideoId
+         });
+     }
+}
+
+// --- Initialization ---
+window.addEventListener('storage', handleStorageChange);
+
+// Cache overlay element on DOM Ready
+document.addEventListener('DOMContentLoaded', () => {
+    fadeOverlay = document.getElementById('fade-overlay');
+    if (!fadeOverlay) console.error("DEBUG: [PlayerWin] CRITICAL - Fade overlay element not found on DOMContentLoaded!");
+    console.log("DEBUG: [PlayerWin] DOM Ready, overlay cached (if found).");
+    
+    // Check if we're running on localhost and show a warning
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        console.warn("DEBUG: [PlayerWin] Running on localhost - YouTube API may have restrictions");
+        
+        // Add a small notification about localhost
+        const localhostNotice = document.createElement('div');
+        localhostNotice.style.position = 'fixed';
+        localhostNotice.style.bottom = '10px';
+        localhostNotice.style.right = '10px';
+        localhostNotice.style.background = 'rgba(255, 255, 0, 0.2)';
+        localhostNotice.style.color = '#fff';
+        localhostNotice.style.padding = '5px 10px';
+        localhostNotice.style.borderRadius = '3px';
+        localhostNotice.style.fontSize = '12px';
+        localhostNotice.style.zIndex = '1000';
+        localhostNotice.textContent = 'Running on localhost - Some videos may not play due to YouTube restrictions';
+        document.body.appendChild(localhostNotice);
     }
 });
 
-// Handle commands from localStorage (fallback)
-function checkForCommands() {
-    try {
-        const commandStr = localStorage.getItem(COMMAND_STORAGE_KEY);
-        if (commandStr) {
-            const command = JSON.parse(commandStr);
-            if (command && command.command) {
-                debugLog("Processing command from localStorage:", command);
-                handleCommand(command.command, command.data);
-                localStorage.removeItem(COMMAND_STORAGE_KEY);
-            }
-        }
-    } catch (error) {
-        const errorMsg = `Error processing command from localStorage: ${error.message}`;
-        console.error("[Jukebox Player]", errorMsg, error);
-        showError(errorMsg);
+// Add API timeout check
+apiReadyCheckTimeoutId = setTimeout(() => {
+    if (!isPlayerReady) { // Check the flag
+         console.error(`DEBUG: [PlayerWin] YouTube API or Player Ready event timed out after ${PLAYER_READY_TIMEOUT_MS / 1000} seconds.`);
+         displayPlayerError("Player Failed to Initialize (Timeout)");
+         // Log container state at timeout
+         const targetElement = document.getElementById('youtube-fullscreen-player');
+         if(targetElement) { const computedStyle = window.getComputedStyle(targetElement); console.error(`DEBUG: [PlayerWin] Timeout occurred. Final check - Target display: '${computedStyle.display}', visibility: '${computedStyle.visibility}'`); }
+         else { console.error("DEBUG: [PlayerWin] Timeout occurred. Target element not found at timeout."); }
+    } else {
+        console.log("DEBUG: [PlayerWin] Timeout check passed, player was already ready.");
     }
-}
+}, PLAYER_READY_TIMEOUT_MS);
 
-// Process commands
-function handleCommand(command, data = {}) {
-    debugLog(`Handling command: ${command}`, data);
-    
-    // If player isn't ready yet, queue the command
-    if (!isPlayerReady) {
-        if (command === 'load' && data.videoId) {
-            // Special case: store video ID to load when player is ready
-            currentPlayerVideoId = data.videoId;
-            if (loadingMessage) loadingMessage.textContent = 'Loading video...';
-        }
-        
-        // Queue the command to be processed when player is ready
-        const maxAttempts = 30; // 3 seconds max wait (100ms * 30)
-        let attempts = 0;
-        
-        const tryCommand = () => {
-            attempts++;
-            if (isPlayerReady) {
-                handleCommand(command, data);
-            } else if (attempts < maxAttempts) {
-                setTimeout(tryCommand, 100);
-            } else {
-                const errorMsg = `Player not ready after ${maxAttempts} attempts`;
-                console.error("[Jukebox Player]", errorMsg);
-                showError("Player initialization timed out. Please try again.");
-                sendStatus('error', { message: errorMsg });
-            }
-        };
-        
-        setTimeout(tryCommand, 100);
-        return;
-    }
-
-    try {
-        switch (command) {
-            case 'play':
-                debugLog("Playing video");
-                player.playVideo();
-                showPlayer();
-                break;
-                
-            case 'pause':
-                debugLog("Pausing video");
-                player.pauseVideo();
-                break;
-                
-            case 'load':
-                if (data.videoId) {
-                    debugLog("Loading video:", data.videoId);
-                    currentPlayerVideoId = data.videoId;
-                    if (loadingMessage) {
-                        loadingMessage.textContent = 'Loading video...';
-                        fadeOverlay.style.display = 'flex';
-                        fadeOverlay.style.opacity = '1';
-                        hideError();
-                    }
-                    
-                    // Load the video
-                    if (data.startSeconds) {
-                        player.loadVideoById({
-                            videoId: data.videoId,
-                            startSeconds: data.startSeconds
-                        });
-                    } else {
-                        player.loadVideoById(data.videoId);
-                    }
-                    
-                    // Show loading state
-                    const playerEl = document.getElementById('youtube-fullscreen-player');
-                    if (playerEl) playerEl.style.opacity = '0';
-                }
-                break;
-                
-            case 'setVolume':
-                if (typeof data.volume === 'number') {
-                    debugLog("Setting volume to:", data.volume);
-                    player.setVolume(data.volume);
-                    if (data.volume > 0) {
-                        player.unMute();
-                    }
-                }
-                break;
-                
-            case 'mute':
-                debugLog("Muting player");
-                player.mute();
-                break;
-                
-            case 'unmute':
-                debugLog("Unmuting player");
-                player.unMute();
-                break;
-                
-            default:
-                debugLog("Unknown command:", command);
-        }
-    } catch (error) {
-        const errorMsg = `Error executing ${command}: ${error.message}`;
-        console.error("[Jukebox Player]", errorMsg, error);
-        showError(`Player error: ${command} failed`);
-        sendStatus('error', { message: errorMsg });
-    }
-}
-
-// Initialize the player with retry logic
-function init() {
-    console.log("[Player] Initializing...");
-    
-    // Clear any existing timeouts
-    if (playerReadyTimeout) {
-        clearTimeout(playerReadyTimeout);
-    }
-    
-    // Set up command polling
-    setInterval(checkForCommands, 100);
-    
-    // Set up player initialization timeout
-    playerReadyTimeout = setTimeout(() => {
-        if (!isPlayerReady) {
-            console.error("[Player] Player initialization timed out");
-            showError("Player initialization timed out. Please try again.");
-            sendStatus('error', { message: 'Player initialization timed out' });
-            
-            // Retry initialization if we haven't exceeded max attempts
-            if (initializationAttempts < MAX_RETRY_ATTEMPTS) {
-                initializationAttempts++;
-                console.log(`[Player] Retrying initialization (attempt ${initializationAttempts}/${MAX_RETRY_ATTEMPTS})`);
-                setTimeout(init, PLAYER_RETRY_DELAY_MS);
-            }
-        }
-    }, PLAYER_READY_TIMEOUT_MS);
-    
-    // Set up DOM elements
-    fadeOverlay = document.getElementById('fade-overlay');
-    loadingMessage = document.getElementById('loading-message');
-    errorMessage = document.getElementById('error-message');
-    
-    // Notify parent that we're loading
-    sendStatus('loading');
-    
-    // The actual player initialization happens in onYouTubeIframeAPIReady
-}
-
-// Start the player
-init();
+console.log("DEBUG: [PlayerWin] Player script initialized, waiting for API ready...");

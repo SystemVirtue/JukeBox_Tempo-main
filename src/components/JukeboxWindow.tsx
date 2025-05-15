@@ -45,6 +45,7 @@ interface VideoItem {
 interface JukeboxWindowProps {
   videos?: VideoItem[];
   onVideoSelect?: (video: VideoItem) => void;
+  onAddToQueue?: (video: VideoItem) => void;
 }
 
 const JukeboxWindow: React.FC<JukeboxWindowProps> = ({
@@ -116,8 +117,15 @@ const JukeboxWindow: React.FC<JukeboxWindowProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const videosPerPage = 8;
 
+  // Deduplicate videos by id + youtubeId
+  const dedupedVideos = Array.from(
+    new Map(
+      videos.map((video) => [video.id + '-' + video.youtubeId, video])
+    ).values()
+  );
+
   // Filter videos based on search term
-  const filteredVideos = videos.filter((video) => {
+  const filteredVideos = dedupedVideos.filter((video) => {
     const searchLower = searchTerm.toLowerCase();
     return (
       video.artist.toLowerCase().includes(searchLower) ||
@@ -176,10 +184,10 @@ const JukeboxWindow: React.FC<JukeboxWindowProps> = ({
 
       {/* Video Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-grow overflow-y-auto">
-        {currentVideos.map((video) => (
+        {currentVideos.map((video, idx) => (
           <Card
-            key={video.id}
-            className="overflow-hidden cursor-pointer hover:ring-2 hover:ring-primary transition-all"
+            key={video.id + '-' + video.youtubeId + '-' + idx}
+            className="cursor-pointer hover:shadow-lg transition-shadow"
             onClick={() => onVideoSelect(video)}
           >
             <div className="relative pb-[56.25%]">
@@ -216,10 +224,10 @@ const JukeboxWindow: React.FC<JukeboxWindowProps> = ({
                     className="w-16 h-16 object-cover rounded mr-3"
                   />
                   <div>
-                    <p className="font-medium">{selectedVideo.title}</p>
-                    <p className="text-sm text-muted-foreground">
+                    <span className="font-medium block">{selectedVideo.title}</span>
+                    <span className="text-sm text-muted-foreground block">
                       {selectedVideo.artist}
-                    </p>
+                    </span>
                   </div>
                 </div>
               )}

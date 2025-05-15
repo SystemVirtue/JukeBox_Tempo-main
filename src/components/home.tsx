@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import SettingsWindow from "./SettingsWindow";
 import { Button } from "@/components/ui/button";
 import { Search, Music, Library, Settings, X, Save, Check } from "lucide-react";
-import PlayerWindow from "./PlayerWindow";
+
 import JukeboxWindow from "./JukeboxWindow";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
@@ -31,8 +31,38 @@ import { useEffect } from "react";
 const YOUTUBE_PLAYLIST_REGEX = /(?:list=)?([a-zA-Z0-9_-]{16,})/;
 const YOUTUBE_API_KEY = 'AIzaSyC12QKbzGaKZw9VD3-ulxU_mrd0htZBiI4'; // YouTube Data API v3 key
 
+const TEST_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLt4yoh9S_Ar6h_mArbGXMJ-QoCkNf_X0z";
+
 const Home = () => {
-  // Add Playlist Dialog State
+  // Playlists and playlist dialog/add state
+  const TEST_PLAYLIST_URL = "https://www.youtube.com/playlist?list=Jukebox_Test_Playlist";
+const TEST_PLAYLIST_ID = "Jukebox_Test_Playlist";
+
+const [playlists, setPlaylists] = useState<LibraryPlaylist[]>([
+  {
+    id: TEST_PLAYLIST_ID,
+    name: "Jukebox Test Playlist",
+    url: TEST_PLAYLIST_URL,
+    enabled: true,
+    videoCount: 2,
+    videos: [
+      {
+        id: "test1",
+        youtubeId: "dQw4w9WgXcQ",
+        title: "Never Gonna Give You Up",
+        artist: "Rick Astley",
+        thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+      },
+      {
+        id: "test2",
+        youtubeId: "9bZkp7q19f0",
+        title: "Gangnam Style",
+        artist: "PSY",
+        thumbnail: "https://i.ytimg.com/vi/9bZkp7q19f0/hqdefault.jpg",
+      }
+    ]
+  }
+]);
   const [addPlaylistDialog, setAddPlaylistDialog] = useState(false);
   const [addPlaylistInput, setAddPlaylistInput] = useState("");
   const [addPlaylistError, setAddPlaylistError] = useState("");
@@ -43,12 +73,15 @@ const Home = () => {
     status: 'idle' // 'idle' | 'fetching' | 'processing' | 'done'
   });
 
+  
+
+
   // Add Playlist Handler
-  async function handleValidateAndAddPlaylist() {
+  async function handleValidateAndAddPlaylist(inputOverride?: string) {
     setAddPlaylistError("");
     setIsAddingPlaylist(true);
     setAddPlaylistProgress({ current: 0, total: 0, status: 'fetching' });
-    const input = addPlaylistInput.trim();
+    const input = (inputOverride !== undefined ? inputOverride : addPlaylistInput.trim());
     
     // Try to extract playlist ID from URL
     const urlMatch = input.match(/[&?]list=([^&]+)/i) || input.match(/^([a-zA-Z0-9_-]+)$/i);
@@ -186,7 +219,7 @@ const Home = () => {
   const [isFirstVisit, setIsFirstVisit] = useState(() => {
     return localStorage.getItem("music_jukebox_visited") === null;
   });
-  const [playlists, setPlaylists] = useState<LibraryPlaylist[]>([]);
+  
   
   // Settings state
   const [defaultPlaylist, setDefaultPlaylist] = useState<string>('none');
@@ -311,27 +344,47 @@ const Home = () => {
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6 relative">
-      {/* Player Overlay - Always visible in top right */}
-      <div className="fixed top-4 right-4 w-[15vw] min-w-[250px] z-50">
-        <PlayerWindow
-          currentVideo={queue[currentVideoIndex] || null}
-          queuePosition={currentVideoIndex + 1}
-          queueTotal={queue.length}
-          onNextVideo={() => {
-            if (queue.length > 0) {
-              setCurrentVideoIndex(prev => (prev + 1) % queue.length);
+      {/* Player Button - Always visible in top right */}
+      <div className="fixed top-4 right-4 z-50">
+        <Button 
+          variant="outline" 
+          className="flex items-center gap-2 bg-background/80 backdrop-blur-sm border-2 border-primary"
+          onClick={() => {
+            // Save current video and queue info to localStorage for the player window
+            try {
+              // Send a command to the player window using the jukeboxCommand key
+              const commandData = {
+                action: 'play',
+                video: queue[currentVideoIndex] || null,
+                queuePosition: currentVideoIndex + 1,
+                queueTotal: queue.length,
+                isPlaying: isPlaying,
+                timestamp: Date.now()
+              };
+              
+              // Store the command in localStorage for the player window to pick up
+              localStorage.setItem('jukeboxCommand', JSON.stringify(commandData));
+              
+              // Open the player in a new window with improved parameters
+              const playerWindow = window.open('/player.html', 'jukebox_player', 
+                'width=800,height=600,resizable=yes,scrollbars=no,status=no');
+              
+              // Focus the player window
+              if (playerWindow) {
+                playerWindow.focus();
+                console.log('Player window opened successfully');
+              } else {
+                console.error('Failed to open player window - popup may be blocked');
+                alert('Player window could not be opened. Please check your popup blocker settings.');
+              }
+            } catch (error) {
+              console.error('Error opening player window:', error);
             }
           }}
-          onPreviousVideo={() => {
-            if (queue.length > 0) {
-              setCurrentVideoIndex(prev => (prev - 1 + queue.length) % queue.length);
-            }
-          }}
-          onVideoEnd={handleVideoEnd}
-          isPlaying={isPlaying}
-          onPlayPause={() => setIsPlaying(!isPlaying)}
-          isMinimized={true}
-        />
+        >
+          <Music className="h-4 w-4" />
+          Open Player
+        </Button>
       </div>
 
       {/* Main Content */}
@@ -371,21 +424,21 @@ const Home = () => {
                     >
                       <div className="w-10 h-10 bg-muted rounded mr-3"></div>
                       <div>
-                        <p className="font-medium">
+                        <div className="font-medium">
                           {item?.title || "Unknown Title"}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
+                        </div>
+                        <div className="text-sm text-muted-foreground">
                           {item?.artist || "Unknown Artist"}
-                        </p>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="bg-card rounded-md p-6 text-center">
-                  <p className="text-muted-foreground">
+                  <div className="text-muted-foreground">
                     Your queue is empty. Add videos from the Jukebox tab.
-                  </p>
+                  </div>
                   <Button
                     variant="outline"
                     className="mt-4"
@@ -405,15 +458,16 @@ const Home = () => {
                .filter(p => p.enabled && Array.isArray(p.videos) && p.videos.length > 0)
                .flatMap(p => p.videos || [])}
              onVideoSelect={(video) => {
-              // Only prevent adding if it's the currently playing video
-              const isPlaying = queue[currentVideoIndex]?.id === video.id;
-              if (isPlaying) {
-                setQueueWarning("Can't add: Video is already in queue or currently playing.");
-                setTimeout(() => setQueueWarning(null), 2000);
-                return;
-              }
-              setAddToQueueDialog({open: true, video});
-            }}
+               // Prevent adding if currently playing or already in queue
+               const isPlaying = queue[currentVideoIndex]?.id === video.id;
+               const isInQueue = queue.some(q => q.id === video.id);
+               if (isPlaying || isInQueue) {
+                 setQueueWarning("Can't add: Video is already in queue or currently playing.");
+                 setTimeout(() => setQueueWarning(null), 2000);
+                 return;
+               }
+               setAddToQueueDialog({open: true, video});
+             }}
           />
           {/* Add to Queue Dialog */}
           <Dialog open={addToQueueDialog.open} onOpenChange={open => setAddToQueueDialog({open, video: open ? addToQueueDialog.video : null})}>
@@ -429,10 +483,8 @@ const Home = () => {
                         className="w-16 h-16 object-cover rounded mr-3"
                       />
                       <div>
-                        <p className="font-medium">{addToQueueDialog.video.title}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {addToQueueDialog.video.artist}
-                        </p>
+                        <div className="font-medium">{addToQueueDialog.video.title}</div>
+                        <div className="text-sm text-muted-foreground">{addToQueueDialog.video.artist}</div>
                       </div>
                     </div>
                   )}
@@ -448,18 +500,24 @@ const Home = () => {
                 </Button>
                 <Button
                   onClick={() => {
-                    if (addToQueueDialog.video) {
-                      setQueue(prevQueue => {
-                        const newQueue = [...prevQueue, addToQueueDialog.video];
-                        if (prevQueue.length === 0) {
-                          setCurrentVideoIndex(0);
-                          setIsPlaying(true);
-                        }
-                        return newQueue;
-                      });
-                    }
-                    setAddToQueueDialog({open: false, video: null});
-                  }}
+                     if (addToQueueDialog.video) {
+                       setQueue(prevQueue => {
+                         // Prevent duplicates at this stage as well (in case of race conditions)
+                         if (prevQueue.some(q => q.id === addToQueueDialog.video.id)) {
+                           setQueueWarning("Can't add: Video is already in queue or currently playing.");
+                           setTimeout(() => setQueueWarning(null), 2000);
+                           return prevQueue;
+                         }
+                         const newQueue = [...prevQueue, addToQueueDialog.video];
+                         if (prevQueue.length === 0) {
+                           setCurrentVideoIndex(0);
+                           setIsPlaying(true);
+                         }
+                         return newQueue;
+                       });
+                     }
+                     setAddToQueueDialog({open: false, video: null});
+                   }}
                   className="flex items-center gap-2"
                 >
                   <Check className="h-4 w-4 text-green-500" /> Yes
@@ -509,12 +567,12 @@ const Home = () => {
                             }}
                           />
                         </div>
-                        <p className="text-sm text-muted-foreground text-center">
+                        <div className="text-sm text-muted-foreground text-center">
                           {addPlaylistProgress.status === 'fetching' 
                             ? 'Fetching playlist info...' 
                             : `Processing videos (${addPlaylistProgress.current} of ${addPlaylistProgress.total})...`
                           }
-                        </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -727,12 +785,7 @@ const Home = () => {
         </TabsContent>
         </Tabs>
 
-        <footer className="mt-12">
-          <Separator className="mb-4" />
-          <div className="text-center text-sm text-muted-foreground">
-            <p>Music Video Jukebox &copy; {new Date().getFullYear()}</p>
-          </div>
-        </footer>
+
       </div>
     </div>
   );
