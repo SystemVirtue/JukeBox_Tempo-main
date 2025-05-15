@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jukebox Player</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+        #youtube-fullscreen-player {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        #fade-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            opacity: 1;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            font-size: 1.2rem;
+        }
+        #loading-message {
+            text-align: center;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 8px;
+        }
+        #error-message {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            background: rgba(255, 0, 0, 0.7);
+            border-radius: 8px;
+            color: white;
+        }
+        #fade-overlay {
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <!-- The single container for the YouTube player -->
+    <div id="youtube-fullscreen-player"></div>
+    <div id="fade-overlay">
+        <div id="loading-message">Loading player...</div>
+        <div id="error-message"></div>
+    </div>
+
+    <!-- 1. First, define the global callback function that the YouTube API will call -->
+    <script>
+      // This function is called by the YouTube IFrame API when it's ready
+      function onYouTubeIframeAPIReady() {
+        console.log('YouTube IFrame API is ready');
+        // The player.js will handle the rest through the window.onYouTubeIframeAPIReady
+        if (window.onYouTubeIframeAPIReady) {
+          window.onYouTubeIframeAPIReady();
+        }
+      }
+      
+      // Add error handler for YouTube API loading
+      function onYouTubeIframeAPIError() {
+        console.error('YouTube IFrame API failed to load');
+        const errorDiv = document.getElementById('error-message');
+        if (errorDiv) {
+          errorDiv.textContent = 'Failed to load YouTube player. Please try again.';
+          errorDiv.style.display = 'block';
+        }
+      }
+    </script>
+    
+    <!-- 2. Load the YouTube IFrame API -->
+    <script src="https://www.youtube.com/iframe_api?onerror=onYouTubeIframeAPIError"></script>
+    
+    <!-- 3. Load our player script -->
+    <script src="/player.js"></script>
+</body>
+</html>
